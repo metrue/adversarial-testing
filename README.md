@@ -24,15 +24,15 @@ flowchart TD
     START(["Target: buggy code + oracle + planted bugs"])
     START --> P1
 
-    subgraph P1["Phase 1 — Repair loop (repair_main.py)"]
+    subgraph P1["Phase 1 — Repair loop (repair_main.run_repair)"]
         direction TB
-        F["find next bug<br/>strategy.find_bug (code + history)"]
-        T["write a failing test<br/>repair_generator.py"]
-        X["fix the code<br/>fixer.generate_fix"]
-        V{"test passes on fix<br/>AND fails on bug?"}
-        H["harden the fix<br/>mutate it, add tests until they bite"]
+        F["find_bug(observation)<br/>strategy.py → has_bug, bug"]
+        T["generate_bug_test<br/>repair_generator.py (strategy tier)"]
+        X["generate_fix<br/>fixer.py"]
+        V{"_verify_fix AND _suite_passes<br/>test bites · no regression"}
+        H["_harden<br/>generate_test → run_and_check until mutants die"]
         F --> T --> X --> V
-        V -->|"no"| R["reject, record attempt"] --> F
+        V -->|"no · retry ≤ RETRY_PER_BUG"| T
         V -->|"yes"| H --> F
     end
 
@@ -57,6 +57,50 @@ Both loops share one **ground-truth contract**: a bug/mutant is only "caught" wh
 *passes on the correct code and fails on the broken code* — the test runner decides, not the
 model. `main.py` runs the mutation loop alone, `repair_main.py` runs the repair loop alone, and
 `orchestrate.py` runs Phase 1 → Phase 2 as a single repair-then-harden pipeline.
+
+### As nested loops
+
+The same system as nested loops (bounded `for … in range(...)` with early-exit stop
+conditions). Every name below is greppable in the repo:
+
+```
+orchestrate.main()                                       # the run · orchestrate.py
+│
+├─ run_repair(buggy, oracle, planted_bugs)               # PHASE 1 · repair_main.py
+│    for iteration in range(MAX_ITERATIONS):             #   per defect
+│        decision = find_bug(observation)                #     strategy.find_bug → has_bug, bug
+│        for attempt in range(RETRY_PER_BUG + 1):        #     retry a test+fix pair
+│            generate_bug_test(code, bug)                #       repair_generator (strategy tier)
+│            generate_fix(code, bug, test)               #       fixer
+│            if _verify_fix(...) and _suite_passes(...): #       accept: bites + no regression → break
+│        _discover_mutants(code)                         #     on accept (bulk tier)
+│        _harden(code, accepted_tests, mutants):         #     strengthen the suite
+│            for attempt in range(HARDEN_ATTEMPTS):      #
+│                generate_test(code, surviving)          #         generator
+│                _measure_kill_rate(...)                 #         → runner.run_and_check
+│                    for m in mutants:                   #             per mutant
+│                        _pytest_passes(test, m)         #               per run · GROUND TRUTH
+│        # stop: (graded == total and kill_rate >= 1)  or  no_progress >= PATIENCE
+│
+└─ _phase2_harden(repaired_code, suite)                  # PHASE 2 · orchestrate.py
+     for iteration in range(HARDEN_MAX):                 #   per round
+         generate_test(code, surviving)                  #     bulk → escalate to strategy on plateau
+         _measure_kill_rate(...) → run_and_check          #     per mutant → per run
+```
+
+| In the diagram | Real symbol · file |
+|---|---|
+| `find_bug` | `strategy.find_bug` |
+| `generate_bug_test` | `repair_generator.generate_bug_test` |
+| `generate_fix` | `fixer.generate_fix` |
+| `_verify_fix` · `_suite_passes` · `_discover_mutants` · `_harden` · `_measure_kill_rate` · `run_repair` | `repair_main.py` |
+| `generate_test` | `generator.generate_test` |
+| `run_and_check` · `_pytest_passes` | `runner.py` |
+| `_phase2_harden` · `main` | `orchestrate.py` |
+
+Note: the **retry** loop (`RETRY_PER_BUG`) and the **harden** loop (`HARDEN_ATTEMPTS`) are
+*siblings* inside the per-defect iteration, not a single deep chain; `main.py` standalone is
+just the mutation loop (`generate_test → run_and_check`, escalate on plateau).
 
 | File | Role |
 |------|------|
