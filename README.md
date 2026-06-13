@@ -19,12 +19,44 @@ The test runner (pytest or vitest) decides — no LLM judges the result.
 
 ## How it works
 
+```mermaid
+flowchart TD
+    START(["Target: buggy code + oracle + planted bugs"])
+    START --> P1
+
+    subgraph P1["Phase 1 — Repair loop (repair_main.py)"]
+        direction TB
+        F["find next bug<br/>strategy.find_bug (code + history)"]
+        T["write a failing test<br/>repair_generator.py"]
+        X["fix the code<br/>fixer.generate_fix"]
+        V{"test passes on fix<br/>AND fails on bug?"}
+        H["harden the fix<br/>mutate it, add tests until they bite"]
+        F --> T --> X --> V
+        V -->|"no"| R["reject, record attempt"] --> F
+        V -->|"yes"| H --> F
+    end
+
+    P1 -->|"repaired code + test suite"| P2
+
+    subgraph P2["Phase 2 — Mutation loop (main.py)"]
+        direction TB
+        D["discover / load mutants"]
+        G["generate test<br/>generator.py to llm.py · tier=bulk (haiku)"]
+        E["verify · run_and_check<br/>pytest / vitest / repo-vitest"]
+        S["score kill_rate · log · shrink survivors"]
+        D --> G --> E --> S
+        S -->|"survivors remain"| Q{"plateau?"}
+        Q -->|"no"| G
+        Q -->|"yes, escalate"| U["bulk to strategy (opus)"] --> G
+    end
+
+    P2 --> DONE(["kill_rate + bugs_fixed + cost · run.jsonl"])
 ```
-queue mutants ─▶ generate test (LLM) ─▶ run vs reference + mutants ─▶ score kill_rate
-                      ▲                                                     │
-                      └────────── plateau? escalate cheap▶smart ◀──────────┘
-                                       stop on full-kill or budget cap
-```
+
+Both loops share one **ground-truth contract**: a bug/mutant is only "caught" when a test
+*passes on the correct code and fails on the broken code* — the test runner decides, not the
+model. `main.py` runs the mutation loop alone, `repair_main.py` runs the repair loop alone, and
+`orchestrate.py` runs Phase 1 → Phase 2 as a single repair-then-harden pipeline.
 
 | File | Role |
 |------|------|
